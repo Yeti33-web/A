@@ -1,0 +1,9 @@
+streamlit>=1.50,<2.0
+pandas>=2.0,<4.0
+numpy>=1.26,<3.0
+plotly>=5.20,<7.0
+requests>=2.31,<3.0
+akshare>=1.18.0
+yfinance>=0.2.65
+baostock>=0.9.3
+supabase>=2.0,<3.0
