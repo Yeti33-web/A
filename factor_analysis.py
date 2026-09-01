@@ -11,7 +11,6 @@ from agent_core import (
     PriceBundle,
     _technical_timing_frame,
     _validate_timing_signal,
-    quality_factor_contributions,
     safe_float,
 )
 
@@ -37,7 +36,7 @@ def _catalog_row(
 
 
 def factor_catalog() -> list[dict[str, str]]:
-    """Return the auditable factor dictionary used by V6.7.1.
+    """Return the auditable factor dictionary used by V6.6.1.
 
     The dictionary deliberately separates predictive factors from suitability,
     confidence and risk-control rules. A rule can affect the final decision even
@@ -85,10 +84,6 @@ def factor_catalog() -> list[dict[str, str]]:
             _catalog_row("基本面评分", "资产负债率", "≥75%:-10；55%—75%:-4；≤35%:+4", "资产和负债", "在未做行业中性化前，过高偏负面", "+4至-10分", "缺失则本项0分"),
             _catalog_row("基本面评分", "经营现金流／净利润", "≥1:+7；<0:-9", "经营现金流和净利润", "现金覆盖越好越正面", "+7至-9分", "缺失则本项0分"),
             _catalog_row("基本面评分", "市盈率TTM", "≤0:-7；>80:-6；0—20:+3", "最新价格和每股收益／公开估值", "极高或亏损偏负面；较低仅小幅加分", "+3至-7分", "缺失则本项0分；可测指标少于2项时基本面不参与总分"),
-            _catalog_row("基本面评分", "投入资本回报率ROIC", "NOPAT÷平均投入资本；≥15%:+6；8%—15%:+3；0—4%:-3；<0:-6", "营业利润、所得税、债务、权益、现金，优先连续两期", "衡量公司使用债权和股权资本创造经营回报的效率", "+6至-6分", "任一关键字段缺失则本项0分，不使用行业均值代填"),
-            _catalog_row("基本面评分", "自由现金流FCF", "经营现金流-资本开支；FCF为正:+2；且FCF／营收≥10%:+5；FCF<0:-6", "经营现金流、资本开支、营业收入", "持续为正说明经营产生的现金在维持投资后仍有剩余", "+5至-6分", "经营现金流或资本开支缺失则本项0分"),
-            _catalog_row("基本面评分", "毛利率／营业利润率趋势", "本期利润率-上期利润率；两项改善:+5；单项改善:+2；任一下降≥3个百分点:-5；两项小幅下降:-4", "连续两期收入、毛利和营业利润", "改善表示盈利质量增强，下降表示成本或竞争压力上升", "+5至-5分（两项合并为一组，避免重复计分）", "仅一项可计算时按该项；两项均缺失则0分"),
-            _catalog_row("基本面评分", "估值历史分位", "当前正市盈率在本公司历史正市盈率样本中的百分位；≤20%:+4；≤40%:+2；≥75%:-3；≥90%:-5", "当前市盈率及同公司历史市盈率；A股至少60个日样本，美国SEC至少3个披露时点样本", "低分位仅表示相对自身较便宜，高分位表示估值容错较低", "+4至-5分", "样本不足、当前亏损或估值不可比时本项0分"),
         ]
     )
 
@@ -113,7 +108,7 @@ def factor_catalog() -> list[dict[str, str]]:
             _catalog_row("持有期时点评分", "10日量价确认", "近10日涨跌与V10/V30组合为放量上涨、缩量上涨、放量下跌或中性", "至少30个交易日价格和成交量", "只作解释背景，因样本外表现不稳定不计分", "0分；仅展示", "价格或成交量缺失时不展示"),
             _catalog_row("持有期时点评分", "波动率历史分位", "20日年化波动率在自身近250日中的分位", "至少120个交易日", "高分位提示不确定性高，不直接预测涨跌", "0分；进入风险解释", "数据不足时不展示"),
             _catalog_row("持有期时点评分", "当前分数局部自校准", "在T日以前已知结果中，选取与当前原始分最接近的25%历史时点，计算同向命中率与符号调整后中位收益", "至少12个已完成的独立历史结果", "只能维持、减半或阻断方向信号，绝不反转失败信号", "通过×1并可形成方向；有限通过×0.5但只展示；未通过×0", "样本不足时不允许据此增强方向"),
-            _catalog_row("持有期时点评分", "跨股票样本外认证", "同一周期在开发股票、较晚时段和独立留出股票中复核；未认证不再清空当前状态分", "多股票、跨阶段且与调参样本分离的历史检验", "控制置信度和仓位，不冒充上涨概率", "未认证时通过信号可信度≤69、仓位≤3%；本股票未通过仍为0仓位", "无认证时保留固定权重状态观察分，并明确标注未认证"),
+            _catalog_row("持有期时点评分", "跨股票样本外认证", "同一周期在开发股票、较晚时段和独立留出股票中复核；未认证不再清空当前状态分", "多股票、跨阶段且与调参样本分离的历史检验", "只控制置信度和仓位上限，不改写观察分", "未认证时通过信号可信度≤69、仓位≤3%", "本股票自身验证未通过时仓位仍为0"),
             _catalog_row("持有期时点评分", "宏观修正", "clip((宏观分-50)×0.08或0.10,-2,2)", "宏观评分", "宏观分高于50为正面", "最多±2分", "宏观分缺失时0分"),
             _catalog_row("持有期时点评分", "基本面修正", "短期0；60／120／250日分别乘0.06／0.10／0.12并截断", "基本面评分", "基本面分高于50为正面；仅用于中长期", "最多±4分", "基本面不可用时0分"),
             _catalog_row("持有期时点评分", "历史相似周期修正", "继续展示相似样本分布，但不进入生产评分", "可得相似历史样本", "只作情景说明，不代表未来方向", "0分", "样本不足时明确显示，不强行预测"),
@@ -303,7 +298,7 @@ def timing_contribution_rows(analysis: Mapping[str, Any]) -> list[dict[str, Any]
             "当前值": f"价格/MA{fast}={(latest / fast_ma - 1):.3%}；MA{fast}/MA{slow}={(fast_ma / slow_ma - 1):.3%}",
             "本次贡献": float(contributions.get("trend") or 0.0),
             "分值范围": "当前状态分±10分",
-            "说明": f"两个均线信号合并为一个趋势块，避免重复计分；历史验证系数{reliability:.2f}只控制方向可操作性",
+            "说明": f"两个均线信号合并为一个趋势块，避免重复计分；验证系数{reliability:.2f}只控制方向可操作性",
         },
     ]
 
@@ -314,7 +309,7 @@ def timing_contribution_rows(analysis: Mapping[str, Any]) -> list[dict[str, Any]
             "当前值": stock_return,
             "本次贡献": float(contributions.get("momentum") or 0.0),
             "分值范围": "当前状态分最多±8分",
-            "说明": f"收益先除以该股票近期正常波动，再截断；历史验证系数{reliability:.2f}只控制方向可操作性",
+            "说明": f"收益先除以该股票近期正常波动，再截断；验证系数{reliability:.2f}只控制方向可操作性",
         }
     )
 
@@ -327,7 +322,7 @@ def timing_contribution_rows(analysis: Mapping[str, Any]) -> list[dict[str, Any]
                 "当前值": excess,
                 "本次贡献": float(contributions.get("relative_strength") or 0.0),
                 "分值范围": "当前状态分最多±7分",
-                "说明": f"相对基准收益按个股正常波动标准化；历史验证系数{reliability:.2f}只控制方向可操作性",
+                "说明": f"相对基准收益按个股正常波动标准化；验证系数{reliability:.2f}只控制方向可操作性",
             },
             {
                 "模块": "当前时点评分",
@@ -343,7 +338,7 @@ def timing_contribution_rows(analysis: Mapping[str, Any]) -> list[dict[str, Any]
                 "当前值": volume_ratio,
                 "本次贡献": 0.0,
                 "分值范围": "0分",
-                "说明": "成交量没有固定涨跌方向，V6.7.1仅作价格信号确认，不再独立加减分",
+                "说明": "成交量没有固定涨跌方向，V6.6.1仅作价格信号确认，不再独立加减分",
             },
             {
                 "模块": "状态背景",
@@ -391,7 +386,7 @@ def timing_contribution_rows(analysis: Mapping[str, Any]) -> list[dict[str, Any]
                 "当前值": selected.get("analog_status") or "未使用",
                 "本次贡献": 0.0,
                 "分值范围": "0分",
-                "说明": "V6.7.1保留情景展示，但不进入生产方向分",
+                "说明": "V6.6.1保留情景展示，但不进入生产方向分",
             },
             {
                 "模块": "可靠性闸门",
@@ -536,7 +531,7 @@ def walk_forward_factor_validation(
         decision, reason = _validation_decision(samples, ic, hit_rate, spread, first_ic, second_ic)
         if key == "volume_context":
             decision = "降低权重"
-            reason = "成交量本身没有固定涨跌方向；V6.7.1生产权重固定为0，只保留量价背景展示。"
+            reason = "成交量本身没有固定涨跌方向；V6.6.1生产权重固定为0，只保留量价背景展示。"
         if key == "short_reversal" and days != 20:
             decision = "降低权重"
             reason = "开发样本只支持20日期限；当前期限生产权重为0。"
@@ -634,7 +629,7 @@ def walk_forward_factor_validation(
                 "前半段IC": None,
                 "后半段IC": None,
                 "建议": "降低权重",
-                "依据": "单只股票的相似样本少且稳定性不足；V6.7.1不计入生产评分，继续作为情景说明。",
+                "依据": "单只股票的相似样本少且稳定性不足；V6.6.1不计入生产评分，继续作为情景说明。",
             }
         )
     else:
@@ -684,18 +679,15 @@ def build_factor_analysis(
     analysis: Mapping[str, Any],
     profile: Mapping[str, Any],
 ) -> dict[str, Any]:
-    fundamental = analysis.get("fundamental")
-    fundamental_fields = getattr(fundamental, "fields", {}) if fundamental is not None else {}
     return {
         "catalog": factor_catalog(),
         "investor_contributions": investor_contribution_rows(profile),
         "stock_risk_contributions": stock_risk_contribution_rows(analysis.get("metrics") or {}),
         "timing_contributions": timing_contribution_rows(analysis),
-        "fundamental_quality_contributions": quality_factor_contributions(dict(fundamental_fields or {}))["rows"],
         "historical_validation": walk_forward_factor_validation(bundle, analysis),
         "policy_note": (
             "风险承受、适配和仓位规则属于安全约束，不以短期收益预测结果决定删除；"
-            "历史验证主要评估能够用日线无前视还原的量价因子。V6.7.1把固定权重状态观察分与"
-            "可操作方向分开：验证失败不会删除观察值，但不会产生买入仓位；相似周期和成交量不独立计分。"
+            "历史验证主要评估能够用日线无前视还原的量价因子。V6.6.1把当前状态观察分与"
+            "可操作方向分开：验证失败不清空观察值，但不产生买入仓位；相似周期和成交量不独立计分。"
         ),
     }

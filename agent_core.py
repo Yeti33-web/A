@@ -28,14 +28,13 @@ except ImportError:
 
 
 HISTORY_YEARS = 5
-MODEL_VERSION = "V6.7.1"
-MODEL_RULESET_ID = "fundamental-quality-v2.1"
+MODEL_VERSION = "V6.6.1"
+MODEL_RULESET_ID = "fused-point-in-time-v1.1"
 
-# Cross-stock certification determines whether a direction is fully certified.
-# Before that certification, a stock whose own historical validation passes may
-# only form a restricted research direction with capped confidence and position.
-# V6.7.1 no longer treats an empty certification table as "all stock evidence is
-# missing": current-state scores always retain the fixed factor weights.
+# Cross-stock certification is retained as a confidence label, not as a switch
+# that clears every stock's current-state score. A stock may form an actionable
+# direction only when its own walk-forward validation passes. Before broader
+# certification, confidence and position size remain capped.
 DIRECTION_CERTIFICATION: dict[str, set[int]] = {
     "A股个股": set(),
     "美股个股": set(),
@@ -50,13 +49,13 @@ def direction_certification(asset_type: str | None, days: int) -> dict[str, Any]
     if certified:
         reason = "该市场的本周期已通过多股票、跨阶段和独立留出样本检查。"
     elif int(days) == 5:
-        reason = "该周期在第二批独立股票样本中未稳定复现，只能使用本股票自身历史验证形成受限判断。"
+        reason = "该周期尚未在第二批独立股票样本中稳定复现，只允许受限的单股判断。"
     elif int(days) in {20, 60}:
-        reason = "该周期在跨股票或跨市场留出样本中方向不稳定，只能使用本股票自身历史验证形成受限判断。"
+        reason = "该周期尚未在跨股票或跨市场留出样本中稳定复现，只允许受限的单股判断。"
     elif int(days) in {120, 250}:
-        reason = "五年窗口内可形成的独立长期样本不足，只能使用本股票自身历史验证形成受限判断。"
+        reason = "五年窗口内的独立长期样本不足，只允许受限的单股判断。"
     else:
-        reason = "该证券类型尚未完成独立样本认证，只能使用本股票自身历史验证形成受限判断。"
+        reason = "该证券类型尚未完成独立样本认证，只允许受限的单股判断。"
     return {
         "status": "已认证" if certified else "未认证",
         "certified": certified,
@@ -977,120 +976,6 @@ def _bao_first_row(result: Any) -> dict[str, Any]:
     return frame.iloc[-1].to_dict()
 
 
-def _bao_valuation_fields(bao_code: str, current_pe: Any, end_date: date) -> dict[str, Any]:
-    """Use BaoStock's daily peTTM series for a same-company five-year percentile."""
-
-    start_date = (pd.Timestamp(end_date) - pd.DateOffset(years=5)).date().isoformat()
-    result = bs.query_history_k_data_plus(
-        bao_code,
-        "date,peTTM",
-        start_date=start_date,
-        end_date=end_date.isoformat(),
-        frequency="d",
-        adjustflag="3",
-    )
-    if result.error_code != "0":
-        return {"估值历史分位": None, "估值历史样本数": 0}
-    frame = _baostock_result_to_frame(result)
-    values = frame.get("peTTM", pd.Series(dtype="float64")).tolist()
-    percentile, sample_count = valuation_history_percentile(current_pe, values, minimum_samples=60)
-    return {"估值历史分位": percentile, "估值历史样本数": sample_count}
-
-
-def _statement_row_values(frame: pd.DataFrame | None, aliases: tuple[str, ...]) -> dict[pd.Timestamp, float]:
-    if frame is None or frame.empty:
-        return {}
-    normalized = {str(index).strip().lower(): index for index in frame.index}
-    matched = None
-    for alias in aliases:
-        matched = normalized.get(alias.strip().lower())
-        if matched is not None:
-            break
-    if matched is None:
-        for alias in aliases:
-            alias_text = alias.strip().lower()
-            matched = next((index for text, index in normalized.items() if alias_text in text), None)
-            if matched is not None:
-                break
-    if matched is None:
-        return {}
-    row = frame.loc[matched]
-    if isinstance(row, pd.DataFrame):
-        row = row.iloc[0]
-    values: dict[pd.Timestamp, float] = {}
-    for column, value in row.items():
-        timestamp = pd.to_datetime(column, errors="coerce")
-        number = safe_float(value)
-        if pd.notna(timestamp) and number is not None:
-            values[pd.Timestamp(timestamp).tz_localize(None)] = number
-    return dict(sorted(values.items(), reverse=True))
-
-
-def _period_value(values: dict[pd.Timestamp, float], position: int = 0) -> float | None:
-    ordered = list(values.values())
-    return ordered[position] if len(ordered) > position else None
-
-
-def _yahoo_quality_fields(ticker: Any) -> tuple[dict[str, Any], list[str]]:
-    """Read recent annual statements for A/US/HK live analysis.
-
-    Yahoo statement dates are not treated as verified filing timestamps, so
-    this helper is never used by Agent B's historical point-in-time replay.
-    """
-
-    notes: list[str] = []
-    try:
-        income = ticker.get_income_stmt(freq="yearly")
-        balance = ticker.get_balance_sheet(freq="yearly")
-        cashflow = ticker.get_cash_flow(freq="yearly")
-    except Exception as exc:
-        return {}, [f"年度财务报表暂不可用：{exc}"]
-
-    revenue = _statement_row_values(income, ("Total Revenue", "Operating Revenue"))
-    gross_profit = _statement_row_values(income, ("Gross Profit",))
-    operating_income = _statement_row_values(income, ("Operating Income", "EBIT"))
-    pretax_income = _statement_row_values(income, ("Pretax Income", "Pre Tax Income"))
-    tax_provision = _statement_row_values(income, ("Tax Provision", "Income Tax Expense"))
-    total_debt = _statement_row_values(balance, ("Total Debt",))
-    equity = _statement_row_values(
-        balance,
-        ("Stockholders Equity", "Common Stock Equity", "Total Equity Gross Minority Interest"),
-    )
-    cash = _statement_row_values(
-        balance,
-        ("Cash Cash Equivalents And Short Term Investments", "Cash And Cash Equivalents"),
-    )
-    operating_cashflow = _statement_row_values(cashflow, ("Operating Cash Flow", "Total Cash From Operating Activities"))
-    capital_expenditure = _statement_row_values(cashflow, ("Capital Expenditure", "Capital Expenditures"))
-    fields = calculate_quality_factor_fields(
-        operating_income=_period_value(operating_income),
-        pretax_income=_period_value(pretax_income),
-        tax_provision=_period_value(tax_provision),
-        total_debt=_period_value(total_debt),
-        equity=_period_value(equity),
-        cash=_period_value(cash),
-        prior_total_debt=_period_value(total_debt, 1),
-        prior_equity=_period_value(equity, 1),
-        prior_cash=_period_value(cash, 1),
-        operating_cashflow=_period_value(operating_cashflow),
-        capital_expenditure=_period_value(capital_expenditure),
-        revenue=_period_value(revenue),
-        gross_profit=_period_value(gross_profit),
-        prior_revenue=_period_value(revenue, 1),
-        prior_gross_profit=_period_value(gross_profit, 1),
-        prior_operating_income=_period_value(operating_income, 1),
-    )
-    if not any(value is not None for value in fields.values()):
-        notes.append("年度报表缺少计算ROIC、FCF或利润率趋势所需的完整字段。")
-    return fields, notes
-
-
-def _fill_missing_fields(target: dict[str, Any], additions: dict[str, Any]) -> None:
-    for key, value in additions.items():
-        if target.get(key) is None and value is not None:
-            target[key] = value
-
-
 def _recent_report_quarters(count: int = 10) -> list[tuple[int, int]]:
     today = date.today()
     year = today.year
@@ -1103,233 +988,6 @@ def _recent_report_quarters(count: int = 10) -> list[tuple[int, int]]:
             year -= 1
             quarter = 4
     return result
-
-
-def calculate_quality_factor_fields(
-    *,
-    operating_income: Any = None,
-    pretax_income: Any = None,
-    tax_provision: Any = None,
-    total_debt: Any = None,
-    equity: Any = None,
-    cash: Any = None,
-    prior_total_debt: Any = None,
-    prior_equity: Any = None,
-    prior_cash: Any = None,
-    operating_cashflow: Any = None,
-    capital_expenditure: Any = None,
-    revenue: Any = None,
-    gross_profit: Any = None,
-    prior_revenue: Any = None,
-    prior_gross_profit: Any = None,
-    prior_operating_income: Any = None,
-) -> dict[str, float | None]:
-    """Calculate the four quality-factor groups without inventing missing inputs.
-
-    ROIC uses NOPAT divided by average invested capital when both current and
-    prior balance-sheet values are available; otherwise it uses current
-    invested capital.  FCF treats capital expenditure as an outflow regardless
-    of whether the source reports it as positive or negative.
-    """
-
-    op_income = safe_float(operating_income)
-    pretax = safe_float(pretax_income)
-    tax = safe_float(tax_provision)
-    debt = safe_float(total_debt)
-    book_equity = safe_float(equity)
-    cash_value = safe_float(cash)
-    prior_debt = safe_float(prior_total_debt)
-    prior_book_equity = safe_float(prior_equity)
-    prior_cash_value = safe_float(prior_cash)
-    cfo = safe_float(operating_cashflow)
-    capex = safe_float(capital_expenditure)
-    sales = safe_float(revenue)
-    gross = safe_float(gross_profit)
-    prior_sales = safe_float(prior_revenue)
-    prior_gross = safe_float(prior_gross_profit)
-    prior_op_income = safe_float(prior_operating_income)
-
-    current_invested = None
-    if debt is not None and book_equity is not None and cash_value is not None:
-        candidate = debt + book_equity - cash_value
-        current_invested = candidate if candidate > 0 else None
-    prior_invested = None
-    if prior_debt is not None and prior_book_equity is not None and prior_cash_value is not None:
-        candidate = prior_debt + prior_book_equity - prior_cash_value
-        prior_invested = candidate if candidate > 0 else None
-    invested_capital = (
-        (current_invested + prior_invested) / 2
-        if current_invested is not None and prior_invested is not None
-        else current_invested
-    )
-
-    effective_tax_rate = None
-    if pretax is not None and pretax > 0 and tax is not None and tax >= 0:
-        effective_tax_rate = float(np.clip(tax / pretax, 0.0, 0.35))
-    roic = (
-        op_income * (1 - effective_tax_rate) / invested_capital
-        if op_income is not None and effective_tax_rate is not None and invested_capital not in {None, 0}
-        else None
-    )
-
-    free_cashflow = cfo - abs(capex) if cfo is not None and capex is not None else None
-    free_cashflow_margin = (
-        free_cashflow / sales if free_cashflow is not None and sales not in {None, 0} else None
-    )
-    gross_margin = gross / sales if gross is not None and sales not in {None, 0} else None
-    prior_gross_margin = (
-        prior_gross / prior_sales if prior_gross is not None and prior_sales not in {None, 0} else None
-    )
-    operating_margin = op_income / sales if op_income is not None and sales not in {None, 0} else None
-    prior_operating_margin = (
-        prior_op_income / prior_sales
-        if prior_op_income is not None and prior_sales not in {None, 0}
-        else None
-    )
-    return {
-        "投入资本回报率ROIC": roic,
-        "自由现金流FCF": free_cashflow,
-        "自由现金流率": free_cashflow_margin,
-        "毛利率": gross_margin,
-        "上期毛利率": prior_gross_margin,
-        "毛利率趋势": (
-            gross_margin - prior_gross_margin
-            if gross_margin is not None and prior_gross_margin is not None
-            else None
-        ),
-        "营业利润率": operating_margin,
-        "上期营业利润率": prior_operating_margin,
-        "营业利润率趋势": (
-            operating_margin - prior_operating_margin
-            if operating_margin is not None and prior_operating_margin is not None
-            else None
-        ),
-    }
-
-
-def valuation_history_percentile(
-    current_pe: Any,
-    historical_pe_values: list[Any],
-    minimum_samples: int = 3,
-) -> tuple[float | None, int]:
-    """Return current positive P/E's percentile within valid positive history."""
-
-    current = safe_float(current_pe)
-    samples = [
-        number
-        for value in historical_pe_values
-        if (number := safe_float(value)) is not None and 0 < number <= 500
-    ]
-    if current is None or current <= 0 or len(samples) < int(minimum_samples):
-        return None, len(samples)
-    return float(np.mean(np.asarray(samples, dtype="float64") <= current)), len(samples)
-
-
-def quality_factor_contributions(fields: dict[str, Any]) -> dict[str, Any]:
-    """Return the exact four new factor-group scores used by production."""
-
-    rows: list[dict[str, Any]] = []
-    positives: list[str] = []
-    risks: list[str] = []
-
-    roic = ratio_fraction(fields.get("投入资本回报率ROIC"))
-    roic_points = 0.0
-    roic_explanation = "关键字段不足，本项不参与"
-    if roic is not None:
-        if roic >= 0.15:
-            roic_points = 6.0
-            roic_explanation = "ROIC不低于15%"
-            positives.append("投入资本回报率较高")
-        elif roic >= 0.08:
-            roic_points = 3.0
-            roic_explanation = "ROIC处于8%—15%"
-        elif roic < 0:
-            roic_points = -6.0
-            roic_explanation = "ROIC为负"
-            risks.append("投入资本回报率为负")
-        elif roic < 0.04:
-            roic_points = -3.0
-            roic_explanation = "ROIC低于4%"
-        else:
-            roic_explanation = "ROIC处于中性区间"
-    rows.append({"因子": "投入资本回报率ROIC", "当前值": roic, "本次贡献": roic_points, "说明": roic_explanation, "可用": roic is not None})
-
-    free_cashflow = safe_float(fields.get("自由现金流FCF"))
-    free_cashflow_margin = ratio_fraction(fields.get("自由现金流率"))
-    fcf_points = 0.0
-    fcf_explanation = "经营现金流或资本开支不足，本项不参与"
-    if free_cashflow is not None:
-        if free_cashflow > 0 and free_cashflow_margin is not None and free_cashflow_margin >= 0.10:
-            fcf_points = 5.0
-            fcf_explanation = "FCF为正且自由现金流率不低于10%"
-            positives.append("自由现金流为正且现金创造能力较强")
-        elif free_cashflow > 0:
-            fcf_points = 2.0
-            fcf_explanation = "FCF为正"
-        elif free_cashflow < 0:
-            fcf_points = -6.0
-            fcf_explanation = "FCF为负"
-            risks.append("自由现金流为负")
-        else:
-            fcf_explanation = "FCF接近0"
-    rows.append({"因子": "自由现金流FCF", "当前值": free_cashflow, "辅助值": free_cashflow_margin, "本次贡献": fcf_points, "说明": fcf_explanation, "可用": free_cashflow is not None})
-
-    margin_changes = [
-        value
-        for value in (
-            ratio_fraction(fields.get("毛利率趋势")),
-            ratio_fraction(fields.get("营业利润率趋势")),
-        )
-        if value is not None
-    ]
-    margin_points = 0.0
-    margin_explanation = "连续两期利润率不足，本项不参与"
-    if margin_changes:
-        if any(value <= -0.03 for value in margin_changes):
-            margin_points = -5.0
-            margin_explanation = "至少一项利润率下降达到3个百分点"
-            risks.append("毛利率或营业利润率明显下滑")
-        elif all(value > 0 for value in margin_changes):
-            margin_points = 5.0 if len(margin_changes) >= 2 else 2.0
-            margin_explanation = "可得利润率趋势均改善"
-            positives.append("毛利率和营业利润率趋势改善")
-        elif all(value < 0 for value in margin_changes):
-            margin_points = -4.0
-            margin_explanation = "可得利润率趋势均走弱"
-            risks.append("盈利能力趋势走弱")
-        else:
-            margin_explanation = "毛利率与营业利润率趋势存在分歧"
-    rows.append({"因子": "毛利率／营业利润率趋势", "当前值": fields.get("毛利率趋势"), "辅助值": fields.get("营业利润率趋势"), "本次贡献": margin_points, "说明": margin_explanation, "可用": bool(margin_changes)})
-
-    valuation_percentile = ratio_fraction(fields.get("估值历史分位"))
-    valuation_points = 0.0
-    valuation_explanation = "历史估值样本不足或当前估值不可比，本项不参与"
-    if valuation_percentile is not None:
-        if valuation_percentile <= 0.20:
-            valuation_points = 4.0
-            valuation_explanation = "当前估值位于自身历史最低20%"
-            positives.append("当前估值处于自身历史较低分位")
-        elif valuation_percentile <= 0.40:
-            valuation_points = 2.0
-            valuation_explanation = "当前估值位于自身历史较低40%"
-        elif valuation_percentile >= 0.90:
-            valuation_points = -5.0
-            valuation_explanation = "当前估值位于自身历史最高10%"
-            risks.append("当前估值处于自身历史高位")
-        elif valuation_percentile >= 0.75:
-            valuation_points = -3.0
-            valuation_explanation = "当前估值位于自身历史最高25%"
-        else:
-            valuation_explanation = "当前估值位于自身历史中间区间"
-    rows.append({"因子": "估值历史分位", "当前值": valuation_percentile, "辅助值": fields.get("估值历史样本数"), "本次贡献": valuation_points, "说明": valuation_explanation, "可用": valuation_percentile is not None})
-
-    return {
-        "rows": rows,
-        "measurable": sum(1 for row in rows if row["可用"]),
-        "points": float(sum(float(row["本次贡献"]) for row in rows)),
-        "positives": positives,
-        "risks": risks,
-    }
 
 
 def _score_fundamentals(fields: dict[str, Any]) -> tuple[float | None, list[str], list[str]]:
@@ -1415,23 +1073,12 @@ def _score_fundamentals(fields: dict[str, Any]) -> tuple[float | None, list[str]
         elif pe < 20:
             score += 3
 
-    quality = quality_factor_contributions(fields)
-    score += float(quality["points"])
-    measurable += int(quality["measurable"])
-    positives.extend(quality["positives"])
-    risks.extend(quality["risks"])
-
     if measurable < 2:
         return None, positives, risks
     return float(np.clip(score, 0, 100)), positives, risks
 
 
-def fetch_a_fundamentals(
-    code: str,
-    last_price: float,
-    asset_type: str,
-    price_history: pd.DataFrame | None = None,
-) -> EvidenceSnapshot:
+def fetch_a_fundamentals(code: str, last_price: float, asset_type: str) -> EvidenceSnapshot:
     if asset_type != "A股个股":
         return EvidenceSnapshot(False, "不适用", notes=["场内基金不使用单一上市公司的财务报表评分。"])
     if bs is None:
@@ -1471,7 +1118,6 @@ def fetch_a_fundamentals(
                     "公司名称": name,
                     "行业": industry,
                     "报告期": latest_period,
-                    "披露日期": profit.get("pubDate") or None,
                     "净资产收益率": safe_float(profit.get("roeAvg")),
                     "净利率": safe_float(profit.get("npMargin")),
                     "净利润同比": safe_float(growth.get("YOYNI")),
@@ -1479,38 +1125,17 @@ def fetch_a_fundamentals(
                     "资产负债率": safe_float(balance.get("liabilityToAsset")),
                     "经营现金流／净利润": safe_float(cashflow.get("CFOToNP")),
                     "每股收益TTM": safe_float(profit.get("epsTTM")),
-                    "毛利率": ratio_fraction(profit.get("gpMargin")),
-                    "上期毛利率": ratio_fraction(previous_profit.get("gpMargin")),
                 }
             )
-            if fields.get("毛利率") is not None and fields.get("上期毛利率") is not None:
-                fields["毛利率趋势"] = float(fields["毛利率"]) - float(fields["上期毛利率"])
             break
         eps = safe_float(fields.get("每股收益TTM"))
         fields["市盈率TTM"] = last_price / eps if eps is not None and eps != 0 else None
-        valuation_end = date.today()
-        if price_history is not None and not price_history.empty and "日期" in price_history:
-            valuation_end = pd.Timestamp(price_history["日期"].max()).date()
-        try:
-            fields.update(_bao_valuation_fields(bao_code, fields.get("市盈率TTM"), valuation_end))
-        except Exception as exc:
-            notes.append(f"估值历史分位暂不可用：{exc}")
         if not latest_period:
             notes.append("公开接口没有返回近期财务报告。")
     except Exception as exc:
         notes.append(f"部分财务数据获取失败：{exc}")
     finally:
         bs.logout()
-    if yf is not None:
-        try:
-            quality_fields, quality_notes = _yahoo_quality_fields(yf.Ticker(a_share_yahoo_ticker(code)))
-            for key, value in quality_fields.items():
-                if value is not None:
-                    fields[key] = value
-            notes.extend(quality_notes)
-            notes.append("ROIC、FCF及营业利润率趋势优先使用最近年度公开报表；缺字段时不估算。")
-        except Exception as exc:
-            notes.append(f"四项质量因子补充数据暂不可用：{exc}")
     score, positives, risks = _score_fundamentals(fields)
     return EvidenceSnapshot(score is not None, "BaoStock公开财务数据", fields, score, positives, risks, notes)
 
@@ -1554,48 +1179,6 @@ def _last_value(series: list[dict[str, Any]]) -> float | None:
     return safe_float(series[-1].get("val")) if series else None
 
 
-def _sec_value_for_end(series: list[dict[str, Any]], report_end: str | None) -> float | None:
-    if not series:
-        return None
-    if report_end:
-        matched = next((item for item in reversed(series) if str(item.get("end")) == str(report_end)), None)
-        return safe_float(matched.get("val")) if matched else None
-    return _last_value(series)
-
-
-def _sum_available(*values: Any) -> float | None:
-    parsed = [number for value in values if (number := safe_float(value)) is not None]
-    return float(sum(parsed)) if parsed else None
-
-
-def _sec_valuation_fields(
-    current_pe: Any,
-    eps_series: list[dict[str, Any]],
-    price_history: pd.DataFrame | None,
-    as_of: date | None,
-) -> dict[str, Any]:
-    if price_history is None or price_history.empty or not {"日期", "收盘"}.issubset(price_history.columns):
-        return {"估值历史分位": None, "估值历史样本数": 0}
-    prices = price_history[["日期", "收盘"]].copy()
-    prices["日期"] = pd.to_datetime(prices["日期"], errors="coerce").dt.tz_localize(None)
-    prices["收盘"] = pd.to_numeric(prices["收盘"], errors="coerce")
-    prices = prices.dropna().sort_values("日期")
-    if as_of is not None:
-        prices = prices[prices["日期"].dt.date <= as_of]
-    historical_pe: list[float] = []
-    for item in eps_series:
-        eps = safe_float(item.get("val"))
-        filed = pd.to_datetime(item.get("filed"), errors="coerce")
-        if eps is None or eps <= 0 or pd.isna(filed):
-            continue
-        visible_prices = prices[prices["日期"] >= pd.Timestamp(filed).tz_localize(None)]
-        if visible_prices.empty:
-            continue
-        historical_pe.append(float(visible_prices.iloc[0]["收盘"]) / eps)
-    percentile, sample_count = valuation_history_percentile(current_pe, historical_pe, minimum_samples=3)
-    return {"估值历史分位": percentile, "估值历史样本数": sample_count}
-
-
 def fetch_sec_fundamentals(
     symbol: str,
     last_price: float | None,
@@ -1613,50 +1196,28 @@ def fetch_sec_fundamentals(
     facts_response.raise_for_status()
     payload = facts_response.json()
     facts = payload.get("facts", {}).get("us-gaap", {})
-    def series(tags: tuple[str, ...], units: tuple[str, ...] = ("USD",)) -> list[dict[str, Any]]:
-        return _sec_fact_series(facts, tags, units, as_of=as_of)
-
-    revenue_series = series(("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"))
-    income_series = series(("NetIncomeLoss", "ProfitLoss"))
-    gross_profit_series = series(("GrossProfit",))
-    operating_income_series = series(("OperatingIncomeLoss",))
-    pretax_income_series = series(("IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"))
-    tax_series = series(("IncomeTaxExpenseBenefit",))
-    equity_series = series(("StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"))
-    assets_series = series(("Assets",))
-    liabilities_series = series(("Liabilities",))
-    cashflow_series = series(("NetCashProvidedByUsedInOperatingActivities",))
-    capex_series = series(("PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsForAdditionsToPropertyPlantAndEquipment"))
-    cash_series = series(("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"))
-    debt_current_series = series(("LongTermDebtCurrent", "LongTermDebtAndFinanceLeaseObligationsCurrent"))
-    debt_noncurrent_series = series(("LongTermDebtNoncurrent", "LongTermDebtAndFinanceLeaseObligationsNoncurrent"))
-    eps_series = series(("EarningsPerShareDiluted", "EarningsPerShareBasic"), ("USD/shares", "USD / shares"))
-    anchor = revenue_series or income_series
-    report_end = str(anchor[-1].get("end")) if anchor else None
-    prior_end = str(anchor[-2].get("end")) if len(anchor) >= 2 else None
-    revenue = _sec_value_for_end(revenue_series, report_end)
-    prior_revenue = _sec_value_for_end(revenue_series, prior_end)
-    income = _sec_value_for_end(income_series, report_end)
-    prior_income = _sec_value_for_end(income_series, prior_end)
-    equity = _sec_value_for_end(equity_series, report_end)
-    prior_equity = _sec_value_for_end(equity_series, prior_end)
-    assets = _sec_value_for_end(assets_series, report_end)
-    liabilities = _sec_value_for_end(liabilities_series, report_end)
-    cashflow = _sec_value_for_end(cashflow_series, report_end)
-    eps = _sec_value_for_end(eps_series, report_end)
-    total_debt = _sum_available(
-        _sec_value_for_end(debt_current_series, report_end),
-        _sec_value_for_end(debt_noncurrent_series, report_end),
-    )
-    prior_total_debt = _sum_available(
-        _sec_value_for_end(debt_current_series, prior_end),
-        _sec_value_for_end(debt_noncurrent_series, prior_end),
-    )
-    report_item = anchor[-1] if anchor else None
+    revenue_series = _sec_fact_series(facts, ("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"), ("USD",), as_of=as_of)
+    income_series = _sec_fact_series(facts, ("NetIncomeLoss", "ProfitLoss"), ("USD",), as_of=as_of)
+    equity_series = _sec_fact_series(facts, ("StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"), ("USD",), as_of=as_of)
+    assets_series = _sec_fact_series(facts, ("Assets",), ("USD",), as_of=as_of)
+    liabilities_series = _sec_fact_series(facts, ("Liabilities",), ("USD",), as_of=as_of)
+    cashflow_series = _sec_fact_series(facts, ("NetCashProvidedByUsedInOperatingActivities",), ("USD",), as_of=as_of)
+    eps_series = _sec_fact_series(facts, ("EarningsPerShareDiluted", "EarningsPerShareBasic"), ("USD/shares", "USD / shares"), as_of=as_of)
+    revenue = _last_value(revenue_series)
+    prior_revenue = safe_float(revenue_series[-2].get("val")) if len(revenue_series) >= 2 else None
+    income = _last_value(income_series)
+    prior_income = safe_float(income_series[-2].get("val")) if len(income_series) >= 2 else None
+    equity = _last_value(equity_series)
+    assets = _last_value(assets_series)
+    liabilities = _last_value(liabilities_series)
+    cashflow = _last_value(cashflow_series)
+    eps = _last_value(eps_series)
+    report_item = revenue_series[-1] if revenue_series else income_series[-1] if income_series else None
+    report_end = report_item.get("end") if report_item else "最近年度"
     fields = {
         "公司名称": payload.get("entityName") or matched.get("title") or symbol,
         "行业": "请结合SEC申报行业另行核对",
-        "报告期": report_end or "最近年度",
+        "报告期": report_end,
         "披露日期": report_item.get("filed") if report_item else None,
         "净资产收益率": income / equity if income is not None and equity not in {None, 0} else None,
         "净利率": income / revenue if income is not None and revenue not in {None, 0} else None,
@@ -1666,43 +1227,18 @@ def fetch_sec_fundamentals(
         "经营现金流／净利润": cashflow / income if cashflow is not None and income not in {None, 0} else None,
         "市盈率TTM": last_price / eps if last_price is not None and eps not in {None, 0} else None,
     }
-    fields.update(
-        calculate_quality_factor_fields(
-            operating_income=_sec_value_for_end(operating_income_series, report_end),
-            pretax_income=_sec_value_for_end(pretax_income_series, report_end),
-            tax_provision=_sec_value_for_end(tax_series, report_end),
-            total_debt=total_debt,
-            equity=equity,
-            cash=_sec_value_for_end(cash_series, report_end),
-            prior_total_debt=prior_total_debt,
-            prior_equity=prior_equity,
-            prior_cash=_sec_value_for_end(cash_series, prior_end),
-            operating_cashflow=cashflow,
-            capital_expenditure=_sec_value_for_end(capex_series, report_end),
-            revenue=revenue,
-            gross_profit=_sec_value_for_end(gross_profit_series, report_end),
-            prior_revenue=prior_revenue,
-            prior_gross_profit=_sec_value_for_end(gross_profit_series, prior_end),
-            prior_operating_income=_sec_value_for_end(operating_income_series, prior_end),
-        )
-    )
-    fields.update(_sec_valuation_fields(fields.get("市盈率TTM"), eps_series, price_history, as_of))
     score, positives, risks = _score_fundamentals(fields)
     notes = [
-        "SEC公司事实数据采用最近可得年度申报口径；市盈率为最新价格除以年度每股收益的简化值。",
-        "历史测试时所有SEC事实均按实际披露日期截断；缺失字段不估算、不加分也不扣分。",
+        "SEC公司事实数据采用最近可得年度申报口径，市盈率为最新价格除以年度每股收益的简化值。",
+        "历史测试时只使用实际披露日期不晚于T的SEC事实；缺失数据不回填。",
     ]
     return EvidenceSnapshot(score is not None, "美国SEC Companyfacts公开申报数据", fields, score, positives, risks, notes)
 
 
-def fetch_us_fundamentals(
-    symbol: str,
-    last_price: float | None = None,
-    price_history: pd.DataFrame | None = None,
-) -> EvidenceSnapshot:
+def fetch_us_fundamentals(symbol: str, last_price: float | None = None) -> EvidenceSnapshot:
     sec_notes: list[str] = []
     try:
-        sec_result = fetch_sec_fundamentals(symbol, last_price, price_history=price_history)
+        sec_result = fetch_sec_fundamentals(symbol, last_price)
         if sec_result.available:
             return sec_result
         sec_notes.extend(sec_result.notes)
@@ -1713,8 +1249,7 @@ def fetch_us_fundamentals(
     fields: dict[str, Any] = {}
     notes: list[str] = []
     try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.get_info()
+        info = yf.Ticker(symbol).get_info()
         fields = {
             "公司名称": info.get("longName") or info.get("shortName") or symbol,
             "行业": info.get("industry") or info.get("sector") or "未取得",
@@ -1732,21 +1267,13 @@ def fetch_us_fundamentals(
         debt_to_equity = safe_float(info.get("debtToEquity"))
         if debt_to_equity is not None:
             fields["债务／权益"] = debt_to_equity / 100 if abs(debt_to_equity) > 5 else debt_to_equity
-        quality_fields, quality_notes = _yahoo_quality_fields(ticker)
-        _fill_missing_fields(fields, quality_fields)
-        notes.extend(quality_notes)
     except Exception as exc:
         notes.append(f"Yahoo财务接口暂不可用：{exc}")
     score, positives, risks = _score_fundamentals(fields)
     return EvidenceSnapshot(score is not None, "Yahoo Finance公开公司资料", fields, score, positives, risks, sec_notes + notes)
 
 
-def fetch_hk_fundamentals(
-    code: str,
-    last_price: float | None = None,
-    price_history: pd.DataFrame | None = None,
-) -> EvidenceSnapshot:
-    del price_history
+def fetch_hk_fundamentals(code: str, last_price: float | None = None) -> EvidenceSnapshot:
     normalized = normalize_hk_code(code)
     symbol = hk_yahoo_ticker(normalized)
     if yf is None:
@@ -1754,8 +1281,7 @@ def fetch_hk_fundamentals(
     fields: dict[str, Any] = {}
     notes: list[str] = []
     try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.get_info()
+        info = yf.Ticker(symbol).get_info()
         fields = {
             "公司名称": info.get("longName") or info.get("shortName") or normalized,
             "行业": info.get("industry") or info.get("sector") or "未取得",
@@ -1773,9 +1299,6 @@ def fetch_hk_fundamentals(
         debt_to_equity = safe_float(info.get("debtToEquity"))
         if debt_to_equity is not None:
             fields["债务／权益"] = debt_to_equity / 100 if abs(debt_to_equity) > 5 else debt_to_equity
-        quality_fields, quality_notes = _yahoo_quality_fields(ticker)
-        _fill_missing_fields(fields, quality_fields)
-        notes.extend(quality_notes)
     except Exception as exc:
         notes.append(f"Yahoo港股公司资料暂不可用：{exc}")
     score, positives, risks = _score_fundamentals(fields)
@@ -2952,16 +2475,15 @@ def score_horizons(
             else:
                 validation["confidence_score"] = min(int(validation.get("confidence_score") or 0), 39)
             validation["certification_note"] = (
-                f"{certification['reason']} 当前状态分继续展示；若本股票自身验证通过，"
-                "置信度和仓位仍受限制。"
+                f"{certification['reason']} 当前状态分仍然展示；"
+                "只有本股票自身历史验证通过时才能形成受限方向。"
             )
         validation["cross_security_certification"] = certification
         reliability_multiplier = float(validation["reliability_multiplier"])
         raw_technical_score = float(current["raw_score"])
-        # These are transparent current-state contributions, not a claimed
-        # probability forecast. Historical validation controls whether the
-        # state may become an actionable direction; it must not erase the
-        # underlying observation score for every stock.
+        # The score below describes the observable state at this date. Historical
+        # validation determines whether that state is actionable; it must not turn
+        # every factor into zero merely because broader certification is unfinished.
         trend_points = float(current["trend_points"])
         momentum_points = float(current["momentum_points"])
         relative_points = float(current["relative_points"])
@@ -3340,9 +2862,9 @@ def build_final_conclusion(
         else:
             conclusion = "当前信号中性，继续观察"
         return conclusion, (
-            f"固定权重当前状态观察分为{score}/100；"
-            f"所选持有期的历史方向验证为{validation.get('status', '未通过')}，"
-            "因此给出状态判断，但不把它包装成已经验证的买入信号，仓位上限保持为0。"
+            f"当前状态观察分为{score}/100；"
+            f"所选持有期的单股历史验证为{validation.get('status', '未通过')}，"
+            "因此可以说明当前强弱，但不把它包装成已验证的买入信号，仓位上限为0。"
         )
     if selected_horizon["score"] < 45:
         return "个人条件可讨论，但当前时点暂缓", "股票与用户并非绝对不匹配，但当前多周期信号偏弱。"
@@ -3488,10 +3010,6 @@ def analyze_sell_signals(
         "净利润同比下降",
         "营业收入同比下降",
         "经营现金流与净利润方向不一致",
-        "投入资本回报率为负",
-        "自由现金流为负",
-        "盈利能力趋势走弱",
-        "毛利率或营业利润率明显下滑",
     )
     deterioration_risks = [
         item for item in fundamental.risks if any(term in item for term in deterioration_terms)

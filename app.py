@@ -57,7 +57,7 @@ from factor_analysis import build_factor_analysis
 
 
 st.set_page_config(
-    page_title="个人投资者股票决策辅助 Agent V6.7.1",
+    page_title="个人投资者股票决策辅助 Agent V6.6.1",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -114,18 +114,12 @@ def cached_price_bundle(market: str, code: str, request_token: int):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_fundamentals(
-    market: str,
-    code: str,
-    last_price: float,
-    asset_type: str,
-    price_history: pd.DataFrame,
-) -> EvidenceSnapshot:
+def cached_fundamentals(market: str, code: str, last_price: float, asset_type: str) -> EvidenceSnapshot:
     if market == "A股":
-        return fetch_a_fundamentals(code, last_price, asset_type, price_history)
+        return fetch_a_fundamentals(code, last_price, asset_type)
     if market == "美股":
-        return fetch_us_fundamentals(code, last_price, price_history)
-    return fetch_hk_fundamentals(code, last_price, price_history)
+        return fetch_us_fundamentals(code, last_price)
+    return fetch_hk_fundamentals(code, last_price)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -486,7 +480,7 @@ def load_current_user_data() -> None:
 
 def render_brand(subtitle: str = "") -> None:
     st.markdown('<div class="app-brand">Five-year evidence · Personal suitability</div>', unsafe_allow_html=True)
-    st.title("个人投资者股票决策辅助 Agent｜状态判断修正版 V6.7.1")
+    st.title("个人投资者股票决策辅助 Agent｜V6.6微调版 V6.6.1")
     st.caption(subtitle or "近五年真实公开行情 · 最新公开资讯 · 历史相似状态检索 · 个人风险适配 · 教学研究原型")
 
 
@@ -1448,13 +1442,7 @@ def render_add_position_assessment(session: dict) -> None:
                 profile["current_holding_value"] = float(holding_snapshot["current_rmb"])
                 profile["additional_amount"] = float(transaction["principal_rmb"])
                 profile["holding_state"] = "已经持有"
-                fundamental = cached_fundamentals(
-                    market,
-                    bundle.code,
-                    round(last_price, 6),
-                    bundle.asset_type,
-                    bundle.stock,
-                )
+                fundamental = cached_fundamentals(market, bundle.code, round(last_price, 6), bundle.asset_type)
                 company_name = fundamental.fields.get("公司名称") if fundamental.fields else None
                 if company_name:
                     bundle.name = str(company_name)
@@ -1463,7 +1451,7 @@ def render_add_position_assessment(session: dict) -> None:
                 status.write("3/5 检索该股票最近公开资讯并核验来源")
                 news_payload = cached_stock_news(market, bundle.code, bundle.name, request_token)
 
-                status.write("4/5 使用V6.7.1状态判断修正模型计算观察分、方向可信度、个人适配和风险预算")
+                status.write("4/5 使用V6.6.1微调模型计算当前状态、方向可信度、个人适配和风险预算")
                 analysis = analyze_all(bundle, profile, fundamental, macro)
                 selected_score = (analysis.get("selected_horizon") or {}).get("score")
                 analysis["news_analysis"] = assess_news(news_payload, selected_score)
@@ -1699,24 +1687,7 @@ def money(value: float, unit: str = "元", signed: bool = False) -> str:
 def format_field(name: str, value) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "未取得"
-    if name in {
-        "净资产收益率",
-        "净利率",
-        "净利润同比",
-        "营收同比",
-        "资产负债率",
-        "经营现金流／净利润",
-        "债务／权益",
-        "投入资本回报率ROIC",
-        "自由现金流率",
-        "毛利率",
-        "上期毛利率",
-        "毛利率趋势",
-        "营业利润率",
-        "上期营业利润率",
-        "营业利润率趋势",
-        "估值历史分位",
-    }:
+    if name in {"净资产收益率", "净利率", "净利润同比", "营收同比", "资产负债率", "经营现金流／净利润", "债务／权益"}:
         parsed = float(value)
         parsed = parsed / 100 if abs(parsed) > 5 else parsed
         return f"{parsed:.3%}"
@@ -1724,10 +1695,6 @@ def format_field(name: str, value) -> str:
         return f"{float(value):.3f}"
     if name == "总市值":
         return f"{float(value):,.3f}"
-    if name == "自由现金流FCF":
-        return f"{float(value):,.3f}"
-    if name == "估值历史样本数":
-        return f"{int(value)}"
     return str(value)
 
 
@@ -1926,7 +1893,7 @@ def render_summary(bundle, analysis, profile) -> None:
         )
     elif not analog.get("available"):
         st.warning("本股在近五年窗口内没有形成达到最低要求的相似样本；请在相似周期页查看逐期限原因。")
-    st.caption("这里展示的是历史样本频率和情景分布，不是确定上涨概率，也不是收益承诺；V6.7.1相似周期不参与评分。")
+    st.caption("这里展示的是历史样本频率和情景分布，不是确定上涨概率，也不是收益承诺；V6.6.1相似周期不参与评分。")
 
     left, right = st.columns(2)
     with left:
@@ -1942,8 +1909,8 @@ def render_summary(bundle, analysis, profile) -> None:
             certification = dict(validation.get("cross_security_certification") or {})
             if certification and not certification.get("certified"):
                 st.warning(
-                    "当前周期尚未通过跨股票样本外认证。V6.7.1会保留当前状态观察分；"
-                    "只有本股票自身历史验证通过时才允许形成受限方向，且仓位上限不超过3%。"
+                    "当前周期尚未通过跨股票样本外认证。观察分仍然保留；"
+                    "只有该股票自身历史验证通过时才能形成受限方向，仓位最高3%。"
                 )
             if validation.get("local_direction_hit_rate") is not None:
                 st.caption(
@@ -2541,34 +2508,6 @@ def render_factor_analysis(bundle, analysis, profile) -> None:
     else:
         st.info("当前没有可解释的持有期时点评分。")
 
-    st.markdown("#### 新增四项基本面因子贡献")
-    quality_rows = pd.DataFrame(factor_result.get("fundamental_quality_contributions") or [])
-    if not quality_rows.empty:
-        def _quality_value(row, column: str) -> str:
-            value = row.get(column)
-            if value is None or pd.isna(value):
-                return "数据不足"
-            if row.get("因子") == "自由现金流FCF" and column == "当前值":
-                return f"{float(value):,.3f}"
-            if row.get("因子") == "估值历史分位" and column == "辅助值":
-                return f"{int(value)}个样本"
-            return f"{float(value):.3%}"
-
-        quality_rows["当前值"] = quality_rows.apply(lambda row: _quality_value(row, "当前值"), axis=1)
-        if "辅助值" not in quality_rows:
-            quality_rows["辅助值"] = None
-        quality_rows["辅助值"] = quality_rows.apply(lambda row: _quality_value(row, "辅助值"), axis=1)
-        quality_rows["本次贡献"] = quality_rows["本次贡献"].map(lambda value: f"{float(value):+.3f}分")
-        quality_rows["状态"] = quality_rows["可用"].map(lambda value: "已参与" if bool(value) else "未参与")
-        st.dataframe(
-            quality_rows[["因子", "当前值", "辅助值", "本次贡献", "状态", "说明"]],
-            hide_index=True,
-            width="stretch",
-        )
-        st.caption("四项因子只通过基本面辅助分影响中长期周期；短期不使用，最终中长期修正仍被限制在±4分内。")
-    else:
-        st.info("本次没有可展示的四项基本面因子。")
-
     left, right = st.columns(2)
     with left:
         st.markdown("#### 用户风险分贡献")
@@ -2625,8 +2564,8 @@ def render_factor_analysis(bundle, analysis, profile) -> None:
             column.caption("、".join(factors) if factors else "本次无")
 
     st.warning(
-        "本页单项建议只针对这只股票、当前所选持有期。V6.7.1不会根据一次结果重新拟合权重；"
-        "但会用预先固定的历史验证闸门将技术贡献保留、减半或归零。跨市场样本外验证仍是后续正式调参依据。"
+        "本页单项建议只针对这只股票、当前所选持有期。V6.6.1不会根据一次结果重新拟合权重；"
+        "历史验证只决定方向能否作为操作依据，不会把当前状态观察分全部清零。"
     )
     for limitation in validation.get("limitations") or []:
         st.caption(f"• {limitation}")
@@ -2675,7 +2614,7 @@ def render_professional(bundle, analysis) -> None:
             - 单只股票内部验证通过后，还必须通过多股票、跨阶段和两批独立留出样本认证。最终封闭检验尚无周期稳定通过，因此当前所有周期只展示观察分，不宣称未来方向。
             - 持有期先按用户目标、资金期限和执行条件确定，不再从多个周期中挑选当前最高分。
             - 基本面只对中长期作有限修正；宏观最多修正正负2分。
-            - 相似周期继续展示收益分布，但不参与V6.7.1生产方向评分。
+            - 相似周期继续展示收益分布，但不参与V6.6.1生产方向评分。
             - 仓位是风险预算参考值，不是收益承诺，也不等于下单指令。
             - 历史上涨样本占比不等于经过校准的真实上涨概率；所有数值由可检查的量化规则计算。
             """
@@ -2731,13 +2670,7 @@ def page_three() -> None:
                 profile["current_holding_value"] = 0.0
                 profile["additional_amount"] = float(profile["planned_amount"])
                 profile["holding_state"] = "尚未持有"
-            fundamental = cached_fundamentals(
-                confirmed_market,
-                bundle.code,
-                round(last_price, 6),
-                bundle.asset_type,
-                bundle.stock,
-            )
+            fundamental = cached_fundamentals(confirmed_market, bundle.code, round(last_price, 6), bundle.asset_type)
             company_name = fundamental.fields.get("公司名称") if fundamental.fields else None
             if company_name:
                 bundle.name = str(company_name)
