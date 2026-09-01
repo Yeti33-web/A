@@ -28,17 +28,14 @@ except ImportError:
 
 
 HISTORY_YEARS = 5
-MODEL_VERSION = "V6.7"
-MODEL_RULESET_ID = "fundamental-quality-v2"
+MODEL_VERSION = "V6.7.1"
+MODEL_RULESET_ID = "fundamental-quality-v2.1"
 
-# A horizon may form a directional conclusion only after it has remained
-# positive across development stocks, later dates and a separate market
-# sample.  This table is deliberately conservative.  The final sealed audit
-# found that the apparent five-day edge did not repeat on a second untouched
-# stock set, so no market/horizon is currently certified.  An uncertified horizon
-# still shows its score and factors, but cannot create a buy direction or
-# position budget.  Hong Kong and funds remain un-certified until their own
-# independent holdout audits are completed.
+# Cross-stock certification determines whether a direction is fully certified.
+# Before that certification, a stock whose own historical validation passes may
+# only form a restricted research direction with capped confidence and position.
+# V6.7.1 no longer treats an empty certification table as "all stock evidence is
+# missing": current-state scores always retain the fixed factor weights.
 DIRECTION_CERTIFICATION: dict[str, set[int]] = {
     "A股个股": set(),
     "美股个股": set(),
@@ -53,13 +50,13 @@ def direction_certification(asset_type: str | None, days: int) -> dict[str, Any]
     if certified:
         reason = "该市场的本周期已通过多股票、跨阶段和独立留出样本检查。"
     elif int(days) == 5:
-        reason = "该周期在第二批独立股票样本中未稳定复现，暂不允许形成方向结论。"
+        reason = "该周期在第二批独立股票样本中未稳定复现，只能使用本股票自身历史验证形成受限判断。"
     elif int(days) in {20, 60}:
-        reason = "该周期在跨股票或跨市场留出样本中方向不稳定，暂不允许形成方向结论。"
+        reason = "该周期在跨股票或跨市场留出样本中方向不稳定，只能使用本股票自身历史验证形成受限判断。"
     elif int(days) in {120, 250}:
-        reason = "五年窗口内可形成的独立长期样本不足，暂不允许形成方向结论。"
+        reason = "五年窗口内可形成的独立长期样本不足，只能使用本股票自身历史验证形成受限判断。"
     else:
-        reason = "该证券类型尚未完成独立样本认证，暂不允许形成方向结论。"
+        reason = "该证券类型尚未完成独立样本认证，只能使用本股票自身历史验证形成受限判断。"
     return {
         "status": "已认证" if certified else "未认证",
         "certified": certified,
@@ -2945,23 +2942,30 @@ def score_horizons(
 
         validation = _validate_timing_signal(factor_frame, int(config["days"]))
         certification = direction_certification(asset_type, int(config["days"]))
+        validation["within_security_status"] = validation.get("status")
+        validation["within_security_reason"] = validation.get("reason")
         if not certification["certified"]:
-            validation = {
-                **validation,
-                "status": "未通过",
-                "confidence_score": min(int(validation.get("confidence_score") or 0), 39),
-                "reliability_multiplier": 0.0,
-                "within_security_status": validation.get("status"),
-                "within_security_reason": validation.get("reason"),
-                "reason": certification["reason"],
-            }
+            if validation.get("status") == "通过":
+                validation["confidence_score"] = min(int(validation.get("confidence_score") or 0), 69)
+            elif validation.get("status") == "有限通过":
+                validation["confidence_score"] = min(int(validation.get("confidence_score") or 0), 54)
+            else:
+                validation["confidence_score"] = min(int(validation.get("confidence_score") or 0), 39)
+            validation["certification_note"] = (
+                f"{certification['reason']} 当前状态分继续展示；若本股票自身验证通过，"
+                "置信度和仓位仍受限制。"
+            )
         validation["cross_security_certification"] = certification
         reliability_multiplier = float(validation["reliability_multiplier"])
         raw_technical_score = float(current["raw_score"])
-        trend_points = float(current["trend_points"]) * reliability_multiplier
-        momentum_points = float(current["momentum_points"]) * reliability_multiplier
-        relative_points = float(current["relative_points"]) * reliability_multiplier
-        short_reversal_points = float(current["short_reversal_adjustment"]) * reliability_multiplier
+        # These are transparent current-state contributions, not a claimed
+        # probability forecast. Historical validation controls whether the
+        # state may become an actionable direction; it must not erase the
+        # underlying observation score for every stock.
+        trend_points = float(current["trend_points"])
+        momentum_points = float(current["momentum_points"])
+        relative_points = float(current["relative_points"])
+        short_reversal_points = float(current["short_reversal_adjustment"])
         score = 50.0 + trend_points + momentum_points + relative_points + short_reversal_points
         stock_return = safe_float(current["stock_return"])
         benchmark_return = safe_float(current["benchmark_return"])
@@ -3084,20 +3088,22 @@ def score_horizons(
             and signal_confidence >= 60
         )
         score_int = int(round(np.clip(score, 0, 100)))
-        if not direction_available:
-            label = "历史验证未通过／不判断方向"
-        elif score_int >= 70:
-            label = "条件较积极"
-        elif score_int >= 60:
-            label = "中性偏积极"
+        if score_int >= 65:
+            label = "当前状态偏强"
+        elif score_int >= 55:
+            label = "当前状态中性偏强"
         elif score_int >= 45:
-            label = "中性观察"
+            label = "当前状态中性"
+        elif score_int >= 35:
+            label = "当前状态偏弱"
         else:
-            label = "偏弱／暂缓"
+            label = "当前状态明显偏弱"
         reasons.append(
             f"本期限历史验证：{validation['status']}，可信度{signal_confidence}/100；"
             f"{validation['reason']}"
         )
+        if validation.get("certification_note"):
+            reasons.append(str(validation["certification_note"]))
         stress_returns = close.pct_change(config["days"]).dropna()
         stress_loss = abs(float(stress_returns.quantile(0.05))) if not stress_returns.empty else np.nan
         historical_worst = float(stress_returns.min()) if not stress_returns.empty else np.nan
@@ -3113,6 +3119,7 @@ def score_horizons(
                 "historical_worst": historical_worst,
                 "raw_technical_score": raw_technical_score,
                 "technical_reliability_multiplier": reliability_multiplier,
+                "score_type": "固定权重当前状态观察分",
                 "signal_confidence": signal_confidence,
                 "direction_available": direction_available,
                 "signal_validation": validation,
@@ -3297,6 +3304,10 @@ def position_budget(
         upper = 0.0
     elif timing_score < 60:
         upper *= 0.50
+    certification = selected_horizon.get("cross_security_certification") or {}
+    certification_cap_applied = not bool(certification.get("certified"))
+    if certification_cap_applied:
+        upper = min(upper, 0.03)
     lower = upper * 0.40 if upper > 0 else 0.0
     assets = float(profile["investable_assets"])
     return {
@@ -3305,6 +3316,7 @@ def position_budget(
         "lower_amount": lower * assets,
         "upper_amount": upper * assets,
         "stress_loss": stress_loss,
+        "certification_cap_applied": certification_cap_applied,
     }
 
 
@@ -3320,10 +3332,17 @@ def build_final_conclusion(
         return "不适合该用户", suitability_result["fit_reason"]
     if not selected_horizon.get("direction_available"):
         validation = selected_horizon.get("signal_validation") or {}
-        return (
-            "个人条件可讨论，但方向证据不足",
-            f"所选持有期的历史验证{validation.get('status', '未通过')}，"
-            "因此本版不把当前技术状态解释为买入信号。",
+        score = int(selected_horizon.get("score") or 50)
+        if score < 45:
+            conclusion = "当前时点偏弱，暂缓"
+        elif score >= 60:
+            conclusion = "当前状态偏强，但仅建议观察"
+        else:
+            conclusion = "当前信号中性，继续观察"
+        return conclusion, (
+            f"固定权重当前状态观察分为{score}/100；"
+            f"所选持有期的历史方向验证为{validation.get('status', '未通过')}，"
+            "因此给出状态判断，但不把它包装成已经验证的买入信号，仓位上限保持为0。"
         )
     if selected_horizon["score"] < 45:
         return "个人条件可讨论，但当前时点暂缓", "股票与用户并非绝对不匹配，但当前多周期信号偏弱。"

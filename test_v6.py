@@ -25,7 +25,7 @@ from session_memory import (
 from snapshot_codec import build_analysis_snapshot, restore_analysis_snapshot
 
 
-BASELINE_AGENT_HASH = "46d70d5757a5c33d9739d63080ace91e64ab09499ab937e165abc5820945519c"
+BASELINE_AGENT_HASH = "5bd48b2992bee6d24a0fe870d9750f2a3b56b3561c798e20700de0ae1cd1892e"
 BASELINE_QUESTIONNAIRE_HASH = "bd1de754bf15802c362b890e93eafaf1311e4852fdc3796ca3343ab33ee2f8c2"
 
 
@@ -35,7 +35,7 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_v67_fundamental_quality_business_core() -> None:
+def test_v671_state_scoring_business_core() -> None:
     assert sha256(ROOT / "agent_core.py") == BASELINE_AGENT_HASH
     assert sha256(ROOT / "questionnaire.py") == BASELINE_QUESTIONNAIRE_HASH
 

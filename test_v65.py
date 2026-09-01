@@ -119,7 +119,7 @@ class FactorCalibrationV66Tests(unittest.TestCase):
             selected,
             {"upper_pct": 0.20},
         )
-        self.assertEqual(conclusion, "个人条件可讨论，但方向证据不足")
+        self.assertEqual(conclusion, "当前状态偏强，但仅建议观察")
 
     def test_limited_validation_is_not_actionable(self):
         scores = agent_core.score_horizons(
@@ -133,6 +133,74 @@ class FactorCalibrationV66Tests(unittest.TestCase):
         for item in scores:
             if (item.get("signal_validation") or {}).get("status") == "有限通过":
                 self.assertFalse(item["direction_available"])
+
+    def test_empty_cross_stock_certification_keeps_state_scores(self):
+        results = agent_core.score_horizons(
+            self.metrics,
+            self.neutral,
+            self.neutral,
+            None,
+            None,
+            "A股个股",
+        )
+        available = [item for item in results if item.get("available")]
+        self.assertTrue(available)
+        self.assertTrue(
+            any(
+                sum(
+                    abs(float((item.get("factor_contributions") or {}).get(key) or 0.0))
+                    for key in ("trend", "momentum", "relative_strength", "short_reversal")
+                )
+                > 0
+                for item in available
+            )
+        )
+        self.assertTrue(all(item.get("score_type") == "固定权重当前状态观察分" for item in available))
+        self.assertTrue(all(0 <= int(item["score"]) <= 100 for item in available))
+
+    def test_unvalidated_direction_has_zero_position(self):
+        profile = {"existing_concentration": "10%以下", "investable_assets": 100_000}
+        selected = {
+            "score": 70,
+            "direction_available": False,
+            "stress_loss": 0.10,
+            "cross_security_certification": {"certified": False},
+        }
+        position = agent_core.position_budget(profile, 3, 3, {"fit": "适配"}, selected)
+        self.assertEqual(position["upper_pct"], 0.0)
+
+    def test_uncertified_but_locally_valid_direction_is_capped_at_three_percent(self):
+        profile = {"existing_concentration": "10%以下", "investable_assets": 100_000}
+        selected = {
+            "score": 70,
+            "direction_available": True,
+            "stress_loss": 0.08,
+            "cross_security_certification": {"certified": False},
+        }
+        position = agent_core.position_budget(profile, 5, 3, {"fit": "适配"}, selected)
+        self.assertGreater(position["upper_pct"], 0.0)
+        self.assertLessEqual(position["upper_pct"], 0.03)
+        self.assertTrue(position["certification_cap_applied"])
+
+    def test_non_actionable_conclusions_still_distinguish_current_state(self):
+        suitability = {"fit": "适配", "fit_reason": "风险等级覆盖"}
+        position = {"upper_pct": 0.0}
+        conclusions = []
+        for score in (40, 50, 70):
+            conclusion, _ = agent_core.build_final_conclusion(
+                suitability,
+                {
+                    "score": score,
+                    "direction_available": False,
+                    "signal_validation": {"status": "未通过"},
+                },
+                position,
+            )
+            conclusions.append(conclusion)
+        self.assertEqual(
+            conclusions,
+            ["当前时点偏弱，暂缓", "当前信号中性，继续观察", "当前状态偏强，但仅建议观察"],
+        )
 
     def test_short_reversal_is_bounded_and_only_used_for_20_days(self):
         close = self.metrics["close"]
